@@ -40,7 +40,6 @@ uint8_t Ds1307_Days_In_Month(uint8_t month, uint8_t year);
  */
 uint8_t Ds1307_Time_Is_Valid(const Ds1307_Time *t);
 
-/** \brief Lớp điều khiển DS1307 đơn giản. */
 class Ds1307
 {
 public:
@@ -49,7 +48,7 @@ public:
     {
     }
     void Init() { /* no-op */ }
-    ErrorStatus Start();              ///< Bật bit CH=0 để bắt đầu dao động nếu đang dừng.
+    ErrorStatus Start();                        ///< Bật bit CH=0 để bắt đầu dao động nếu đang dừng.
     ErrorStatus Set_Time(const Ds1307_Time &t); ///< Ghi thời gian (convert sang BCD).
     ErrorStatus Get_Time(Ds1307_Time *t);       ///< Đọc thời gian.
 

@@ -2,7 +2,7 @@
  * \file Rotary.h
  * \brief Driver encoder quay dùng EXTI (ví dụ PA1/PA2) cho STM32F103.
  * \details
- *  - Giải mã theo bảng chuyển trạng thái 4-bit (Arduino style).
+ *  - Giải mã theo bảng chuyển trạng thái 4-bit.
  *  - Tích luỹ quarter-step -> detent (mặc định 4 quarter = 1 bước người dùng).
  *  - Debounce bằng chu kỳ DWT (micro giây) để giảm rung tín hiệu.
  *  - ISR gọi ISR_Dispatch() -> Handle_ISR() -> gửi delta (+1/-1) qua queue FreeRTOS.
@@ -55,9 +55,9 @@ private:
 	uint16_t pin_a_;
 	uint16_t pin_b_;
 
-	volatile uint8_t state_ = 0; ///< last 2 states (prev|curr)
-	volatile int8_t accum_q_ = 0; ///< quarter-step accumulator
-	volatile int16_t steps_ = 0; ///< detent steps accumulator
+	volatile uint8_t state_ = 0;		///< last 2 states (prev|curr)
+	volatile int8_t accum_q_ = 0;		///< quarter-step accumulator
+	volatile int16_t steps_ = 0;		///< detent steps accumulator
 	volatile uint32_t last_cycles_ = 0; ///< debounce bằng chu kỳ DWT
 
 	uint32_t debounce_us_ = 10;
@@ -70,5 +70,5 @@ private:
 	static int8_t Transition_Step(uint8_t s);
 
 	static RotaryEncoder *s_instance_; ///< Instance duy nhất
-	static QueueHandle_t s_queue_; ///< Queue nhận delta
+	static QueueHandle_t s_queue_;	   ///< Queue nhận delta
 };

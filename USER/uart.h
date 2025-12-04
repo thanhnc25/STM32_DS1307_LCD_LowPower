@@ -1,6 +1,6 @@
 /**
  * \file uart.h
- * \brief Lớp và hàm hỗ trợ giao tiếp UART cho STM32F103 (StdPeriph).
+ * \brief Lớp và hàm hỗ trợ giao tiếp UART cho STM32F103.
  * \details Cung cấp API ghi/đọc kiểu polling cơ bản. Có thể mở rộng thêm bằng ngắt / DMA.
  * Mã nguồn đã chuẩn hoá dấu ngoặc và có chú thích Doxygen bằng tiếng Việt có dấu.
  */
@@ -18,7 +18,8 @@
 
 // FreeRTOS queue (dùng khi bật nhận dòng qua ngắt). Nếu không dùng FreeRTOS vẫn biên dịch được.
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -106,7 +107,7 @@ public:
 	void Write_Char(char c);
 
 	// IByteReader
-	virtual int Read() override;      ///< Đọc 1 byte hoặc -1
+	virtual int Read() override;	  ///< Đọc 1 byte hoặc -1
 	virtual int Available() override; ///< 0 hoặc 1 (polling)
 
 	inline USART_TypeDef *raw() const
@@ -119,7 +120,7 @@ protected:
 	virtual void Setup_Default_Pins();
 	virtual void Setup_Uart(uint32_t baud, uint16_t parity, uint16_t stopBits);
 	uint32_t Usart_Clock_APB() const; ///< Giá trị RCC dùng bật clock
-	bool Is_APB2() const;             ///< true nếu nằm trên bus APB2
+	bool Is_APB2() const;			  ///< true nếu nằm trên bus APB2
 
 protected:
 	USART_TypeDef *usart_;
@@ -132,4 +133,3 @@ protected:
  *  Việc phân tích nội dung dòng (parse) được giữ ở main như yêu cầu.
  */
 extern "C" void USART1_IRQHandler(void);
-

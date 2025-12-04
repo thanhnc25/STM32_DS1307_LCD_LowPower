@@ -119,27 +119,3 @@ ErrorStatus Ds1307::Get_Time(Ds1307_Time *t)
 
     return SUCCESS;
 }
-
-// ErrorStatus Ds1307::Set_Square_Wave(uint8_t enable, DS1307_RATE rate)
-// {
-//     uint8_t ctrl = 0;
-//     if (enable)
-//         ctrl = (uint8_t)(0x10 | (rate & 0x03));
-//     else
-//         ctrl = 0x00;
-//     return i2c_->Write_Reg(DS1307_ADDR, 0x07, &ctrl, 1, 100000);
-// }
-
-// ErrorStatus Ds1307::Write_Ram(uint8_t offset, const uint8_t *data, uint8_t len)
-// {
-//     if (offset + len > 56)
-//         return ERROR;
-//     return i2c_->Write_Reg(DS1307_ADDR, (uint8_t)(0x08 + offset), data, len, 100000);
-// }
-
-// ErrorStatus Ds1307::Read_Ram(uint8_t offset, uint8_t *data, uint8_t len)
-// {
-//     if (offset + len > 56)
-//         return ERROR;
-//     return i2c_->Read_Reg(DS1307_ADDR, (uint8_t)(0x08 + offset), data, len, 100000);
-// }

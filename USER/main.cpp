@@ -1,14 +1,10 @@
-/**
- * \file main.cpp
- * \brief Ứng dụng chính: hiển thị thời gian DS1307 lên LCD, chỉnh bằng encoder + nút, và giao tiếp UART.
- * \details Mã đã được làm sạch: chuẩn hoá dấu ngoặc, tách ISR UART sang uart.cpp, kiểm tra thời gian sang ds1307.
- */
 #include "stm32f10x.h"
 #include "stm32f10x_pwr.h"
 #include "stm32f10x_i2c.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+
 #include "i2c.h"
 #include "lcd_i2c.h"
 #include "ds1307.h"
@@ -17,15 +13,13 @@
 #include "gpio.h"
 #include "math.h"
 
-// FreeRTOS
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
 #include "event_groups.h"
 
-// ----------------- Nguyên mẫu hàm (prototypes) -----------------
-static void BusyDelayMs(uint32_t ms);
+static void Delay_Ms_Nop(uint32_t ms);
 static void Task_LCD(void *arg);
 enum class RtcCmdType : uint8_t;
 struct RtcCmd;
@@ -37,7 +31,6 @@ static int parse_uint(const char *s, int maxlen);
 static bool Parse_Set_Line(const char *line, Ds1307_Time *out);
 static void Task_UART(void *arg);
 
-// ----------------- Cấu hình chung -----------------
 #define QUEUE_LEN_INPUT 16
 #define MUTEX_WAIT_MS 50
 #define DS1307_POLL_MS 500
@@ -46,29 +39,25 @@ static void Task_UART(void *arg);
 #define INACTIVITY_SLEEP_MS 10000
 #define HOLD_ENTER_EDIT_MS 2000
 
-// Bit Event Group
 #define EVT_USER_ACTIVE (1u << 0)
 #define EVT_TIME_UPDATED (1u << 1)
 #define EVT_EDIT_MODE (1u << 2)
 #define EVT_SLEEPING (1u << 3)
 
-// Không khởi tạo encoder toàn cục (tránh cấu hình NVIC trước khi set PriorityGroup trong main)
 static RotaryEncoder *g_encoder = nullptr;
 
-// GPIO nguồn LCD/RTC và nút PA0 dùng lớp GpioPin
 static GpioPin g_pin_lcd(GPIOB, GPIO_Pin_1);
 static GpioPin g_pin_rtc(GPIOB, GPIO_Pin_5);
 static GpioPin g_pin_btn(GPIOA, GPIO_Pin_0);
 
-// Nguồn LCD/RTC: PB1 (LCD), PB5 (RTC) – 1: bật, 0: tắt; PA0: nút (external pulldown -> active-high)
-static inline void PowerPins_Init()
+static inline void Power_Pins_Init()
 {
     g_pin_lcd.As_Output_Push_Pull();
     g_pin_lcd.Set_High();
 
     g_pin_rtc.As_Output_Push_Pull();
     g_pin_rtc.Set_High();
-    // PA0 có kéo xuống bên ngoài -> để floating hoặc pull-down, đọc active-high
+
     g_pin_btn.As_Input_Floating();
     // Cấu hình ngưỡng giữ theo yêu cầu
     g_pin_btn.Button_Init(/*active_low=*/false, /*hold_ms=*/HOLD_ENTER_EDIT_MS);
@@ -88,18 +77,12 @@ static inline void RTC_Power(bool on)
         g_pin_rtc.Set_Low();
 }
 
-// KHÔNG cấu hình EXTI cho PA0 khi khởi động; chỉ dùng cho WakeUp trước khi ngủ (PWR_WakeUpPin)
-
-// ----------------- Biến/tài nguyên toàn cục -----------------
 static EventGroupHandle_t g_evt;
 static QueueHandle_t g_input_q;             // queue nhận delta int8 từ ISR encoder
 static SemaphoreHandle_t g_i2c1_mtx;        // RTC
 static SemaphoreHandle_t g_i2c2_mtx;        // LCD
 static SemaphoreHandle_t g_state_mtx;       // bảo vệ state/time chỉnh
 static TaskHandle_t g_power_task = nullptr; // handle để suspend/resume Task_Power khi vào/ra chế độ chỉnh
-// Queue nhận dòng UART từ ISR được định nghĩa trong uart.cpp (g_uart_line_q)
-
-// Kiểu UartLine đã được khai báo trong uart.h
 
 static I2c g_i2c_lcd;
 static I2c g_i2c_rtc;
@@ -107,13 +90,12 @@ static Lcd_I2c *g_lcd = nullptr;
 static Ds1307 *g_rtc = nullptr;
 
 static Ds1307_Time g_time;      // thời gian thực đọc được
-static Ds1307_Time g_edit_time; // thời gian đang chỉnh 
-// Thứ tự chỉnh mới: 0:hh,1:mm,2:ss,3:day,4:date,5:month,6:year
+static Ds1307_Time g_edit_time; // thời gian đang chỉnh
+// Thứ tự chỉnh: 0:hh,1:mm,2:ss,3:day,4:date,5:month,6:year
 static uint8_t g_edit_field = 0;
 static uint8_t g_in_edit = 0;
-static Uart g_dbg_uart(USART1, 115200);
+static Uart Uart1(USART1, 115200);
 
-// ----------------- Tiện ích -----------------
 static const char *DOW_Name(uint8_t day)
 {
     switch (day)
@@ -137,13 +119,7 @@ static const char *DOW_Name(uint8_t day)
     }
 }
 
-// Hàm Days_In_Month đã chuyển sang ds1307.cpp -> Ds1307_Days_In_Month
-
-// Không dùng EXTI0 cho xử lý nút trong runtime; dùng polling qua GpioPin
-
-// ----------------- Nhiệm vụ -----------------
-// Delay bận rộn ngắn dùng trong giai đoạn trước scheduler
-static void BusyDelayMs(uint32_t ms)
+static void Delay_Ms_Nop(uint32_t ms)
 {
     while (ms--)
     {
@@ -155,8 +131,6 @@ static void BusyDelayMs(uint32_t ms)
     }
 }
 
-// (Đã bỏ I2C2 bus recover để đơn giản hóa theo yêu cầu)
-/** \brief Task hiển thị LCD: cập nhật 2 dòng thời gian/ngày, hỗ trợ nháy khi chỉnh. */
 static void Task_LCD(void *arg)
 {
     (void)arg;
@@ -165,7 +139,6 @@ static void Task_LCD(void *arg)
     uint8_t blink = 0;
     static char last0[17] = {0};
     static char last1[17] = {0};
-    // g_dbg_uart.Write("Task LCD start\r\n");
     for (;;)
     {
         // Chờ sự kiện TIME_UPDATED hoặc refresh theo chu kỳ để nháy
@@ -183,12 +156,16 @@ static void Task_LCD(void *arg)
         xSemaphoreGive(g_state_mtx);
         // Cập nhật trạng thái nhấp nháy theo chu kỳ riêng khi đang chỉnh
         TickType_t nowTick = xTaskGetTickCount();
-        if (in_edit) {
-            if ((nowTick - last_blink) >= pdMS_TO_TICKS(EDIT_BLINK_MS)) {
+        if (in_edit)
+        {
+            if ((nowTick - last_blink) >= pdMS_TO_TICKS(EDIT_BLINK_MS))
+            {
                 blink ^= 1;
                 last_blink = nowTick;
             }
-        } else {
+        }
+        else
+        {
             blink = 0; // ngoài chế độ chỉnh: không nháy
         }
 
@@ -264,7 +241,8 @@ static void Task_LCD(void *arg)
             line0[16] = '\0';
             for (size_t i = 0; i < len0 && (pad0 + i) < 16; i++)
                 line0[pad0 + i] = temp0[i];
-            if (strcmp(last0, line0) != 0) {
+            if (strcmp(last0, line0) != 0)
+            {
                 g_lcd->Set_Cursor(0, 0);
                 g_lcd->Print(line0);
                 strncpy(last0, line0, 17);
@@ -325,7 +303,8 @@ static void Task_LCD(void *arg)
             line1[16] = '\0';
             for (size_t i = 0; i < len1 && (pad1 + i) < 16; i++)
                 line1[pad1 + i] = temp1[i];
-            if (strcmp(last1, line1) != 0) {
+            if (strcmp(last1, line1) != 0)
+            {
                 g_lcd->Set_Cursor(0, 1);
                 g_lcd->Print(line1);
                 strncpy(last1, line1, 17);
@@ -351,12 +330,9 @@ struct RtcCmd
 };
 static QueueHandle_t g_rtc_cmd_q;
 
-/** \brief Task RTC: định kỳ đọc thời gian và xử lý lệnh SET_TIME từ queue. */
 static void Task_RTC(void *arg)
 {
     (void)arg;
-    // g_dbg_uart.Write("Task RTC start\r\n");
-    // Khởi tạo RTC và bắt đầu dao động
     if (xSemaphoreTake(g_i2c1_mtx, portMAX_DELAY) == pdTRUE)
     {
         g_rtc->Init();
@@ -429,7 +405,7 @@ static void Bump_Field(Ds1307_Time &t, uint8_t field, int8_t dir)
         t.day = (uint8_t)v;
         break;
     }
-    case 4: // date 1..31 (phụ thuộc tháng, năm)
+    case 4:
     {
         uint8_t dim = Ds1307_Days_In_Month(t.month, t.year);
         int v = t.date + (dir > 0 ? 1 : -1);
@@ -464,8 +440,6 @@ static void Task_Input(void *arg)
 {
     (void)arg;
     TickType_t last_check = xTaskGetTickCount();
-    // g_dbg_uart.Write("Task INPUT start\r\n");
-
     for (;;)
     {
         // Nhận delta từ ISR (mỗi phần tử queue là int8_t: +1 CW, -1 CCW)
@@ -473,8 +447,6 @@ static void Task_Input(void *arg)
         if (xQueueReceive(g_input_q, &delta, 0) == pdPASS)
         {
             xEventGroupSetBits(g_evt, EVT_USER_ACTIVE);
-            // if (delta > 0) g_dbg_uart.Write("ENC:CW\r\n");
-            // else          g_dbg_uart.Write("ENC:CCW\r\n");
             if (g_in_edit)
             {
                 xSemaphoreTake(g_state_mtx, portMAX_DELAY);
@@ -483,7 +455,6 @@ static void Task_Input(void *arg)
             }
         }
 
-        // 2) Poll nút PA0: trả về PRESS/HOLD theo thời gian giữa 2 lần đọc
         TickType_t now = xTaskGetTickCount();
         uint32_t dt_ms = (uint32_t)pdTICKS_TO_MS(now - last_check);
         if (dt_ms == 0)
@@ -501,7 +472,6 @@ static void Task_Input(void *arg)
                 g_edit_field = (uint8_t)((g_edit_field + 1) % 7);
                 xSemaphoreGive(g_state_mtx);
             }
-            // Không làm gì nếu chưa vào edit (yêu cầu: chỉ giữ mới vào edit)
         }
         else if (bev == GpioPin::ButtonEvent::HOLD)
         {
@@ -515,16 +485,14 @@ static void Task_Input(void *arg)
                 g_in_edit = 1;
                 xSemaphoreGive(g_state_mtx);
                 xEventGroupSetBits(g_evt, EVT_EDIT_MODE);
-                // Tạm dừng task POWER trong thời gian chỉnh để tránh tự standby
+
                 if (g_power_task)
                 {
                     vTaskSuspend(g_power_task);
-                    // g_dbg_uart.Write("POWER suspended (edit)\r\n");
                 }
             }
             else
             {
-                // Đang chỉnh: giữ để gửi giờ ngay và thoát
                 RtcCmd cmd;
                 cmd.type = RtcCmdType::SET_TIME;
                 xSemaphoreTake(g_state_mtx, portMAX_DELAY);
@@ -541,12 +509,10 @@ static void Task_Input(void *arg)
                 if (g_power_task)
                 {
                     vTaskResume(g_power_task);
-                    // g_dbg_uart.Write("POWER resumed (exit edit)\r\n");
                 }
             }
         }
 
-        // Nhường CPU cho các task ưu tiên thấp hơn (tránh chiếm CPU liên tục)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -557,7 +523,6 @@ static void Task_Power(void *arg)
     (void)arg;
     // Bật clock PWR cho chế độ tiết kiệm
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
-    // g_dbg_uart.Write("Task POWER start\r\n");
 
     for (;;)
     {
@@ -565,12 +530,8 @@ static void Task_Power(void *arg)
         EventBits_t bits = xEventGroupWaitBits(g_evt, EVT_USER_ACTIVE, pdTRUE, pdFALSE, pdMS_TO_TICKS(INACTIVITY_SLEEP_MS));
         if ((bits & EVT_USER_ACTIVE) == 0)
         {
-            // Không có tương tác -> vào STANDBY (tắt nguồn tải, deinit ngoại vi, rồi standby)
             xEventGroupSetBits(g_evt, EVT_SLEEPING);
 
-            // vTaskSuspendAll();
-
-            // Tắt backlight trước khi cắt nguồn
             if (g_lcd)
             {
                 if (xSemaphoreTake(g_i2c2_mtx, pdMS_TO_TICKS(MUTEX_WAIT_MS)) == pdTRUE)
@@ -580,16 +541,13 @@ static void Task_Power(void *arg)
                 }
             }
 
-            // Cắt nguồn cho LCD và RTC
             LCD_Power(false);
             RTC_Power(false);
 
-            // Deinit I2C để giảm dòng rò
             g_i2c_lcd.Deinit();
             g_i2c_rtc.Deinit();
 
-            // In debug trước khi vào Standby
-            g_dbg_uart.Write("Enter STANDBY...\r\n");
+            Uart1.Write("Enter STANDBY...\r\n");
 
             // Chuẩn bị Standby: bật WakeUp pin (PA0 WKUP, sườn lên), xóa cờ
             RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
@@ -635,38 +593,46 @@ static bool Parse_Set_Line(const char *line, Ds1307_Time *out)
         return false;
     while (*p && *p >= '0' && *p <= '9')
         ++p;
-    if (*p++ != ':') return false;
+    if (*p++ != ':')
+        return false;
     mm = parse_uint(p, 2);
     if (mm < 0)
         return false;
     while (*p && *p >= '0' && *p <= '9')
         ++p;
-    if (*p++ != ':') return false;
+    if (*p++ != ':')
+        return false;
     ss = parse_uint(p, 2);
     if (ss < 0)
         return false;
     while (*p && *p >= '0' && *p <= '9')
         ++p;
-    if (*p++ != ',') return false;
+    if (*p++ != ',')
+        return false;
     dd = parse_uint(p, 2);
     if (dd < 0)
         return false;
     while (*p && *p >= '0' && *p <= '9')
         ++p;
-    if (*p++ != '/') return false;
+    if (*p++ != '/')
+        return false;
     mo = parse_uint(p, 2);
     if (mo < 0)
         return false;
     while (*p && *p >= '0' && *p <= '9')
         ++p;
-    if (*p++ != '/') return false;
+    if (*p++ != '/')
+        return false;
     yy = parse_uint(p, 4);
     if (yy < 0)
         return false;
-    while (*p && *p >= '0' && *p <= '9') ++p;
-    if (*p++ != ',') return false;
+    while (*p && *p >= '0' && *p <= '9')
+        ++p;
+    if (*p++ != ',')
+        return false;
     day = parse_uint(p, 1);
-    if (day < 0) return false;
+    if (day < 0)
+        return false;
 
     uint8_t y2 = (yy >= 2000) ? (uint8_t)(yy - 2000) : (uint8_t)yy;
     Ds1307_Time tmp;
@@ -682,8 +648,6 @@ static bool Parse_Set_Line(const char *line, Ds1307_Time *out)
     *out = tmp;
     return true;
 }
-
-// ISR USART1 đã được chuyển sang uart.cpp
 
 /** \brief Task UART: xử lý dòng nhận được và in thời gian định kỳ. */
 static void Task_UART(void *arg)
@@ -703,12 +667,12 @@ static void Task_UART(void *arg)
                 cmd.type = RtcCmdType::SET_TIME;
                 cmd.t = nt;
                 (void)xQueueSend(g_rtc_cmd_q, &cmd, 0);
-                g_dbg_uart.Write("OK\r\n");
+                Uart1.Write("OK\r\n");
                 xEventGroupSetBits(g_evt, EVT_USER_ACTIVE);
             }
             else
             {
-                g_dbg_uart.Write("ERR\r\n");
+                Uart1.Write("ERR\r\n");
             }
         }
 
@@ -724,34 +688,27 @@ static void Task_UART(void *arg)
             uint16_t y = 2000 + t.year;
             snprintf(buf, sizeof(buf), "TIME,%02u:%02u:%02u,%02u/%02u/%04u,%u\r\n",
                      t.hours, t.minutes, t.seconds, t.date, t.month, y, t.day);
-            g_dbg_uart.Write(buf);
+            Uart1.Write(buf);
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
-// ----------------- Khởi tạo và main -----------------
-
 int main(void)
 {
-    // SystemInit() đã gọi từ startup. Cập nhật SystemCoreClock để LCD delay đúng nếu cần
     SystemCoreClockUpdate();
-    // Đặt Priority Group đúng cho FreeRTOS (4 bit preemption, 0 bit subpriority)
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
-    // Nếu thức dậy từ Standby, in thông báo
+
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
     if (PWR_GetFlagStatus(PWR_FLAG_SB) != RESET)
     {
         PWR_ClearFlag(PWR_FLAG_SB);
         PWR_ClearFlag(PWR_FLAG_WU);
-        // g_dbg_uart.Write("Wake from STANDBY\r\n");
     }
-    // g_dbg_uart.Write("BOOT\r\n");
 
-    PowerPins_Init();
-    BusyDelayMs(100); // cho nguồn LCD/RTC ổn định trước khi cấu hình tiếp
-    // g_dbg_uart.Write("GPIO ok\r\n");
+    Power_Pins_Init();
+    Delay_Ms_Nop(100); // cho nguồn LCD/RTC ổn định trước khi cấu hình tiếp
 
     // RTOS objects
     g_evt = xEventGroupCreate();
@@ -764,7 +721,6 @@ int main(void)
     // Khởi tạo I2C và thiết bị ngoại vi
     g_i2c_lcd.Init(I2c::I2C_BUS2, 100000);
     g_i2c_rtc.Init(I2c::I2C_BUS1, 100000);
-    // g_dbg_uart.Write("I2C1/I2C2 init ok\r\n");
 
     // LCD cố định địa chỉ 0x27 (không cần autodetect)
     static Lcd_I2c s_lcd(&g_i2c_lcd, 0x27, 16, 2);
@@ -772,12 +728,10 @@ int main(void)
     g_lcd->Init();
     g_lcd->Backlight(1);
     g_lcd->Clear();
-    // g_dbg_uart.Write("LCD inited @0x27\r\n");
 
     // Tạo đối tượng RTC (tránh nullptr)
     static Ds1307 s_rtc(&g_i2c_rtc);
     g_rtc = &s_rtc;
-    // g_dbg_uart.Write("RTC obj ready\r\n");
 
     // Encoder trên PA1/PA2: khởi tạo SAU khi set PriorityGroup và tạo queue
     static RotaryEncoder s_encoder(GPIOA, GPIO_Pin_1, GPIO_Pin_2, 100, 4);
@@ -805,8 +759,6 @@ int main(void)
 
     vTaskStartScheduler();
     while (1)
-    {        
+    {
     }
 }
-
-

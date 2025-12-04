@@ -30,8 +30,7 @@ public:
     };
 
     I2c()
-        : i2c_(nullptr)
-        , bus_(I2C_BUS2)
+        : i2c_(nullptr), bus_(I2C_BUS2)
     {
     }
 

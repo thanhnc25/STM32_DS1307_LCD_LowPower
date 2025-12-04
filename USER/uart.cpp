@@ -48,9 +48,7 @@ static uint16_t defaultRxPin(USART_TypeDef *u)
 }
 
 Uart::Uart(USART_TypeDef *instance, uint32_t baud)
-	: usart_(instance)
-	, tx_(defaultTxPort(instance), defaultTxPin(instance))
-	, rx_(defaultRxPort(instance), defaultRxPin(instance))
+	: usart_(instance), tx_(defaultTxPort(instance), defaultTxPin(instance)), rx_(defaultRxPort(instance), defaultRxPin(instance))
 {
 	// Khởi tạo UART ngay trong constructor với baud mặc định (9600 nếu không truyền)
 	Begin(baud);
@@ -199,6 +197,3 @@ extern "C" void USART1_IRQHandler(void)
 	}
 	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
-
-
-

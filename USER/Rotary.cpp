@@ -160,7 +160,8 @@ inline void RotaryEncoder::Handle_ISR()
         {
             steps_++;
             accum_q_ = 0;
-            if (s_queue_) {
+            if (s_queue_)
+            {
                 int8_t delta = +1;
                 BaseType_t hpw = pdFALSE;
                 xQueueSendFromISR(s_queue_, &delta, &hpw);
@@ -171,7 +172,8 @@ inline void RotaryEncoder::Handle_ISR()
         {
             steps_--;
             accum_q_ = 0;
-            if (s_queue_) {
+            if (s_queue_)
+            {
                 int8_t delta = -1;
                 BaseType_t hpw = pdFALSE;
                 xQueueSendFromISR(s_queue_, &delta, &hpw);
